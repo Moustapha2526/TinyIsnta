@@ -35,7 +35,7 @@ TEMPLATE_INDEX = '''
 '''
 
 # ------------------------------------------------------------
-# TIMELINE — Version stable sans GQL (évite erreurs Datastore)
+# TIMELINE — Version stable sans GQL
 # ------------------------------------------------------------
 def get_timeline(user: str, limit: int = 20):
     if not user:
@@ -49,7 +49,7 @@ def get_timeline(user: str, limit: int = 20):
 
     follows = list(set(user_entity.get('follows', []) + [user]))
 
-    # Pas de GQL : trop instable avec IN + ORDER BY
+    # Pas de GQL : trop instable avec IN + ORDER BY sur Datastore en mode standard
     posts = []
     for author in follows:
         q = client.query(kind='Post')
@@ -57,14 +57,14 @@ def get_timeline(user: str, limit: int = 20):
         q.order = ['-created']
         posts.extend(list(q.fetch(limit=limit)))
 
-    # Trie global (limit total)
+    # Tri global en mémoire (nécessaire car on merge plusieurs requêtes)
     posts = sorted(posts, key=lambda p: p.get('created'), reverse=True)[:limit]
 
     return posts
 
 
 # ------------------------------------------------------------
-# SEED — Version solide et adaptée au benchmark
+# SEED — Fonction interne (utilisée par la route /admin/seed)
 # ------------------------------------------------------------
 def seed_data(users: int = 5, posts: int = 30,
               follows_min: int = 1, follows_max: int = 3,
@@ -87,6 +87,8 @@ def seed_data(users: int = 5, posts: int = 30,
     for name in user_names:
         key = client.key('User', name)
         entity = client.get(key)
+        
+        if not entity: continue
 
         others = [u for u in user_names if u != name]
 
@@ -102,10 +104,14 @@ def seed_data(users: int = 5, posts: int = 30,
         target = random.randint(min_follow, max_follow)
         selection = random.sample(others, target)
 
-        entity['follows'] = sorted(selection)
+        # On fusionne avec les existants pour ne pas écraser si on re-seed
+        existing_follows = set(entity.get('follows', []))
+        new_follows = sorted(list(existing_follows.union(set(selection))))
+        
+        entity['follows'] = new_follows
         client.put(entity)
 
-    # Posts (optimisés)
+    # Posts
     created_posts = 0
     base_time = datetime.utcnow()
 
@@ -145,7 +151,7 @@ def api_timeline():
     if not user:
         return jsonify({"error": "missing user"}), 400
 
-    # Vérification utilisateur
+    # Vérification simple de l'existence de l'utilisateur
     if not client.get(client.key('User', user)):
         return jsonify({"error": "unknown user"}), 404
 
@@ -168,6 +174,7 @@ def api_timeline():
 
 @app.route('/admin/seed', methods=['POST'])
 def admin_seed():
+    """Route pour seeder via API (alternative au script local)"""
     expected = os.environ.get('SEED_TOKEN')
     provided = request.headers.get('X-Seed-Token') \
         or request.args.get('token') \
@@ -202,11 +209,42 @@ def admin_seed():
     return jsonify({'status': 'ok', **result})
 
 
+@app.route('/admin/clear', methods=['POST'])
+def admin_clear():
+    """Route pour nettoyer la base de données"""
+    expected = os.environ.get('SEED_TOKEN')
+    provided = request.headers.get('X-Seed-Token') \
+        or request.args.get('token') \
+        or request.form.get('token')
+
+    if expected and provided != expected:
+        return jsonify({'error': 'forbidden'}), 403
+
+    # Suppression des Users
+    q_users = client.query(kind='User')
+    users_keys = [e.key for e in q_users.fetch()]
+    if users_keys:
+        client.delete_multi(users_keys)
+
+    # Suppression des Posts
+    q_posts = client.query(kind='Post')
+    posts_keys = [e.key for e in q_posts.fetch()]
+    if posts_keys:
+        client.delete_multi(posts_keys)
+
+    return jsonify({
+        "status": "ok",
+        "users_deleted": len(users_keys),
+        "posts_deleted": len(posts_keys)
+    })
+
+
 @app.route('/login', methods=['POST'])
 def login():
     username = request.form['username']
     key = client.key('User', username)
 
+    # Création auto si inexistant à la connexion (feature simpliste)
     if not client.get(key):
         entity = datastore.Entity(key)
         entity['follows'] = []
@@ -250,7 +288,9 @@ def follow():
     user_key = client.key('User', user)
     user_entity = client.get(user_key)
 
-    if to_follow not in user_entity['follows']:
+    if user_entity and to_follow not in user_entity.get('follows', []):
+        if 'follows' not in user_entity:
+            user_entity['follows'] = []
         user_entity['follows'].append(to_follow)
         client.put(user_entity)
 
@@ -258,35 +298,6 @@ def follow():
 
 
 if __name__ == '__main__':
-    app.run(host='127.0.0.1', port=8080, debug=True)
-
-@app.route('/admin/clear', methods=['POST'])
-def admin_clear():
-    expected = os.environ.get('SEED_TOKEN')
-    provided = request.headers.get('X-Seed-Token') \
-        or request.args.get('token') \
-        or request.form.get('token')
-
-    if expected and provided != expected:
-        return jsonify({'error': 'forbidden'}), 403
-
-    q_users = client.query(kind='User')
-    users = list(q_users.fetch())
-    for u in users:
-        client.delete(u.key)
-
-    q_posts = client.query(kind='Post')
-    posts = list(q_posts.fetch())
-    for p in posts:
-        client.delete(p.key)
-
-    return jsonify({
-        "status": "ok",
-        "users_deleted": len(users),
-        "posts_deleted": len(posts)
-    })
-
-
-# ⚠️ Ce bloc DOIT être en tout dernier
-if __name__ == '__main__':
+    # Ceci est utilisé pour le développement local.
+    # En prod avec Gunicorn, ce bloc n'est pas exécuté, mais l'app est importée.
     app.run(host='127.0.0.1', port=8080, debug=True)
