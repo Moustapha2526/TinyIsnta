@@ -1,98 +1,99 @@
 import pandas as pd
 import matplotlib.pyplot as plt
-import numpy as np
 import os
 
-# --- Configuration des fichiers et des titres ---
-# Le dossier 'out' doit contenir les fichiers CSV
-OUT_DIR = 'out' 
-FILES = {
-    # Fichier CSV : (Titre du graphique, Label de l'axe X)
-    'conc.csv': ('Temps moyen par requête selon la concurrence (ms)', 'Nombre d\'utilisateurs concurrents'),
-    'post.csv': ('Temps moyen par requête selon le volume de posts (ms)', 'Nombre de posts par utilisateur'),
-    'fanout.csv': ('Temps moyen par requête selon le fan-out (ms)', 'Nombre de followees par utilisateur')
-}
+# --- Configuration et Définition des Fichiers ---
+OUTPUT_DIR = 'out'
+PLOTS_TO_GENERATE = [
+    {
+        'file': 'conc.csv',
+        'title': 'Temps moyen par requête selon la Concurrence',
+        'param_name': 'Nombre d\'utilisateurs concurrents',
+        'output_png': 'conc.png'
+    },
+    {
+        'file': 'post.csv',
+        'title': 'Temps moyen par requête selon le Nombre de Posts',
+        'param_name': 'Nombre de posts par utilisateur',
+        'output_png': 'post.png'
+    },
+    {
+        'file': 'fanout.csv',
+        'title': 'Temps moyen par requête selon le Fanout',
+        'param_name': 'Nombre de followees par utilisateur',
+        'output_png': 'fanout.png'
+    },
+]
 
+# --- Fonction de Plotting ---
+def generate_plot(config):
+    """Lit le CSV au format large, calcule la moyenne/variance et génère le graphique."""
+    
+    input_path = os.path.join(OUTPUT_DIR, config['file'])
+    output_png_path = config['output_png'] # Fichier PNG généré à la racine du projet
 
-def process_and_plot(filename, title, xlabel):
-    """Charge un fichier CSV, calcule la moyenne et la variance, puis génère le barplot avec barres d'erreur."""
-    
-    csv_path = os.path.join(OUT_DIR, filename)
-    
-    if not os.path.exists(csv_path):
-        print(f"⚠️ Fichier {csv_path} introuvable. Veuillez vérifier le chemin et le nom.")
-        return
+    print(f"Traitement de {input_path}...")
 
     try:
-        # Lire le fichier CSV
-        # On utilise le premier en-tête comme index/paramètre
-        df = pd.read_csv(csv_path, sep=',', header=0)
-        
-        # S'assurer que les noms de colonnes sont conformes (ex: RUN_1_TEMPS_MS)
-        time_cols = [col for col in df.columns if 'TEMPS' in col.upper() or 'RUN' in col.upper()]
-        
-        if len(time_cols) < 2:
-            print(f"❌ Erreur: Le fichier {filename} doit contenir au moins 2 colonnes de temps (RUN_1, RUN_2, etc.).")
-            return
+        # 1. Lecture du fichier CSV (format large attendu: PARAM, RUN_1, RUN_2, RUN_3...)
+        df = pd.read_csv(input_path)
+    except FileNotFoundError:
+        print(f"❌ Erreur: Fichier {input_path} non trouvé. Assurez-vous qu'il est dans le répertoire '{OUTPUT_DIR}'.")
+        return
+    
+    # 2. Identification des colonnes de temps (RUN_1, RUN_2, RUN_3)
+    run_cols = [col for col in df.columns if col.startswith('RUN_')]
+    
+    if not run_cols:
+        print(f"❌ Erreur: Aucune colonne 'RUN_x' trouvée dans {input_path}. Le fichier n'est pas au format large attendu.")
+        return
 
-        # Calculer la moyenne et l'écart-type (variance) pour les barres d'erreur
-        df['MEAN'] = df[time_cols].mean(axis=1)
-        df['STD_DEV'] = df[time_cols].std(axis=1) # std() pour l'écart-type
-        
-        # Le nom de la colonne des paramètres est généralement la première
-        param_col = df.columns[0]
-        
-        # --- Génération du graphique ---
-        
-        # Création de la figure
-        plt.figure(figsize=(10, 6))
-        
-        # Barplot avec barres d'erreur (écart-type)
-        plt.bar(df[param_col].astype(str), # X: Les labels de paramètres
-                df['MEAN'],                # Y: La moyenne du temps
-                yerr=df['STD_DEV'],        # Les barres d'erreur (écart-type)
-                capsize=5,                 # Taille des capuchons de barres d'erreur
-                color='skyblue',
-                edgecolor='black',
-                alpha=0.7)
+    # 3. Calcul des statistiques (Moyenne et Écart-type (STD) = Variance)
+    # Les calculs sont faits ligne par ligne sur les colonnes RUN
+    df['AVG_TIME_MEAN'] = df[run_cols].mean(axis=1) 
+    df['AVG_TIME_STD'] = df[run_cols].std(axis=1)   
+    
+    # 4. Création du Barplot avec Barres d'Erreur
+    plt.figure(figsize=(10, 6))
+    
+    # Utilisez 'PARAM' pour l'axe des X et la moyenne pour la hauteur des barres.
+    # yerr est l'écart-type qui représente la variance.
+    plt.bar(
+        df['PARAM'].astype(str), 
+        df['AVG_TIME_MEAN'], 
+        yerr=df['AVG_TIME_STD'], 
+        capsize=5, # Taille des capuchons sur les barres d'erreur
+        color='darkblue', 
+        alpha=0.8
+    )
+    
+    # 5. Configuration du graphique
+    plt.title(config['title'], fontsize=16)
+    plt.xlabel(config['param_name'], fontsize=12)
+    plt.ylabel('Temps moyen par requête (ms)', fontsize=12)
+    plt.grid(axis='y', linestyle='--', alpha=0.5)
+    plt.xticks(rotation=0)
+    plt.tight_layout() # Ajustement automatique
 
-        # Ajouter les titres et labels
-        plt.title(title, fontsize=16)
-        plt.xlabel(xlabel, fontsize=12)
-        plt.ylabel('Temps moyen par requête (ms)', fontsize=12)
-        plt.grid(axis='y', linestyle='--', alpha=0.6)
-        
-        # Rotation des labels X pour une meilleure lisibilité si les valeurs sont grandes
-        plt.xticks(rotation=0)
-        
-        # S'assurer que le graphique est bien ajusté
-        plt.tight_layout()
-        
-        # Sauvegarde du graphique au format .png (nom de fichier basé sur le CSV)
-        output_filename = filename.replace('.csv', '.png')
-        output_path = os.path.join(OUT_DIR, output_filename)
-        
-        # Créer le dossier 'out' s'il n'existe pas
-        if not os.path.exists(OUT_DIR):
-            os.makedirs(OUT_DIR)
-            
-        plt.savefig(output_path)
-        print(f"✅ Graphique généré et sauvegardé : {output_path}")
-
+    # 6. Sauvegarde
+    try:
+        plt.savefig(output_png_path)
+        print(f"✅ Graphique généré et enregistré : {output_png_path}")
     except Exception as e:
-        print(f"Une erreur est survenue lors du traitement de {filename}: {e}")
+        print(f"❌ Erreur lors de l'enregistrement de {output_png_path}: {e}")
+    finally:
+        plt.close()
 
-
-def main():
+# --- Exécution Principale ---
+if __name__ == '__main__':
     print("--- Démarrage de la génération des graphiques de benchmark ---")
     
-    for filename, (title, xlabel) in FILES.items():
-        process_and_plot(filename, title, xlabel)
+    # Créer le répertoire de sortie si nécessaire, pour éviter les erreurs de chemin lors de la sauvegarde du PNG
+    if not os.path.exists(OUTPUT_DIR):
+        print(f"Répertoire '{OUTPUT_DIR}' non trouvé. Assurez-vous que les CSV y sont stockés.")
+        
+    # Boucle sur les trois configurations
+    for plot_config in PLOTS_TO_GENERATE:
+        generate_plot(plot_config)
     
-    print("--- Tous les graphiques ont été traités. ---")
-
-
-if __name__ == '__main__':
-    # Installer les librairies si ce n'est pas déjà fait :
-    # pip install pandas matplotlib numpy
-    main()
+    print("--- Traitement terminé ---")
